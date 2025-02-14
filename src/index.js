@@ -1,54 +1,61 @@
 export default {
   async fetch(request, env) {
-    // Handle CORS for all routes
+    // Handle CORS preflight requests
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "POST",
+          "Access-Control-Allow-Origin": "https://www.businessinitiative.org",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
           "Access-Control-Allow-Headers": "Content-Type",
+          "Access-Control-Max-Age": "86400",
         },
       });
     }
 
-    // Only allow POST requests
-    if (request.method !== "POST") {
-      return new Response("Method not allowed", { status: 405 });
+    // Handle actual requests
+    if (request.method === "POST") {
+      const url = new URL(request.url);
+      
+      // Route handler for different tools
+      switch (url.pathname) {
+        case "/business-structure":
+          return handleBusinessStructure(request, env);
+        case "/llc-generator":
+          return handleLLCGenerator(request, env);
+        default:
+          return new Response("Not found", { 
+            status: 404,
+            headers: {
+              "Access-Control-Allow-Origin": "https://www.businessinitiative.org"
+            }
+          });
+      }
     }
 
-    const url = new URL(request.url);
-    
-    // Route handler for different tools
-    switch (url.pathname) {
-      case "/business-structure":
-        return handleBusinessStructure(request, env);
-      case "/llc-generator":
-        return handleLLCGenerator(request, env);
-      default:
-        return new Response("Not found", { status: 404 });
-    }
-  },
+    return new Response("Method not allowed", { 
+      status: 405,
+      headers: {
+        "Access-Control-Allow-Origin": "https://www.businessinitiative.org"
+      }
+    });
+  }
 };
 
 async function handleBusinessStructure(request, env) {
   try {
     const { answers } = await request.json();
 
-    const prompt = `Based on the following business characteristics, recommend the most suitable business structure (Sole Proprietorship, LLC, or Corporation) and provide detailed explanation:
+    const prompt = `Based on the following business details, recommend the most suitable business structure (Sole Proprietorship, LLC, or Corporation):
+    - Expected Revenue: ${answers.revenue}
+    - Employee Plans: ${answers.employees}
+    - Liability Concerns: ${answers.liability}
+    - Funding Plans: ${answers.funding}
+    - Business Complexity: ${answers.complexity}
 
-Revenue Level: ${answers.revenue}
-Employee Plans: ${answers.employees}
-Liability Concern: ${answers.liability}
-Funding Plans: ${answers.funding}
-Business Complexity: ${answers.complexity}
-
-Please provide the response in the following JSON format:
-{
-  "recommendation": "structure name",
-  "explanation": "detailed explanation",
-  "benefits": ["benefit1", "benefit2", "benefit3"],
-  "nextSteps": ["step1", "step2", "step3"]
-}`;
+    Please provide:
+    1. The recommended structure
+    2. A brief explanation
+    3. Three key benefits of this structure for their situation`;
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -57,24 +64,33 @@ Please provide the response in the following JSON format:
         'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-4",
-        messages: [
-          { role: "system", content: "You are a business structure expert advisor." },
-          { role: "user", content: prompt }
-        ],
+        model: "gpt-3.5-turbo",
+        messages: [{
+          role: "user",
+          content: prompt
+        }],
         temperature: 0.7,
-        max_tokens: 500,
-        response_format: { type: "json_object" }
       }),
     });
 
-    const data = await response.json();
-    const content = JSON.parse(data.choices[0].message.content);
+    if (!response.ok) {
+      throw new Error('OpenAI API request failed');
+    }
 
-    return new Response(JSON.stringify(content), {
+    const data = await response.json();
+    const content = data.choices[0].message.content;
+
+    // Parse the response
+    const [recommendation, explanation, ...benefits] = content.split('\n').filter(line => line.trim());
+
+    return new Response(JSON.stringify({
+      recommendation: recommendation.replace(/^[0-9]\.\s*/, ''),
+      explanation: explanation.replace(/^[0-9]\.\s*/, ''),
+      benefits: benefits.map(benefit => benefit.replace(/^[0-9]\.\s*/, '').replace(/^-\s*/, '')),
+    }), {
       headers: {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": "https://www.businessinitiative.org",
       },
     });
   } catch (error) {
@@ -82,7 +98,7 @@ Please provide the response in the following JSON format:
       status: 500,
       headers: {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": "https://www.businessinitiative.org",
       },
     });
   }
@@ -92,10 +108,16 @@ async function handleLLCGenerator(request, env) {
   try {
     const { industry, keywords } = await request.json();
 
-    const prompt = `Generate 5 unique and creative LLC business names for a company in the ${industry} industry.
-    Keywords to consider: ${keywords}
-    The names should be professional, memorable, and end with "LLC".
-    Return only the names, one per line.`;
+    const prompt = `Generate 5 creative and professional LLC business names based on:
+    Industry: ${industry}
+    Keywords: ${keywords}
+
+    Requirements:
+    - Names should be unique and memorable
+    - Include "LLC" at the end
+    - Avoid common or generic terms
+    - Consider brand potential
+    - Keep it professional`;
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -104,15 +126,18 @@ async function handleLLCGenerator(request, env) {
         'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-4",
-        messages: [
-          { role: "system", content: "You are a creative business name generator." },
-          { role: "user", content: prompt }
-        ],
-        temperature: 0.7,
-        max_tokens: 200,
+        model: "gpt-3.5-turbo",
+        messages: [{
+          role: "user",
+          content: prompt
+        }],
+        temperature: 0.8,
       }),
     });
+
+    if (!response.ok) {
+      throw new Error('OpenAI API request failed');
+    }
 
     const data = await response.json();
     const names = data.choices[0].message.content
@@ -123,7 +148,7 @@ async function handleLLCGenerator(request, env) {
     return new Response(JSON.stringify({ names }), {
       headers: {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": "https://www.businessinitiative.org",
       },
     });
   } catch (error) {
@@ -131,8 +156,8 @@ async function handleLLCGenerator(request, env) {
       status: 500,
       headers: {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": "https://www.businessinitiative.org",
       },
     });
   }
-} 
+}
